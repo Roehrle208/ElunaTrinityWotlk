@@ -594,6 +594,12 @@ class TC_GAME_API WorldSession
         time_t GetCalendarEventCreationCooldown() const { return _calendarEventCreationCooldown; }
         void SetCalendarEventCreationCooldown(time_t cooldown) { _calendarEventCreationCooldown = cooldown; }
 
+        /*>MXB*/
+        bool MxbIsBot() const { return _mxbBot; }
+        void MxbIsBot(bool flag) { _mxbBot = flag; }
+        void HandlePlayerLogin_Simple(ObjectGuid pmCharacterGUID);
+        /*<MXB*/
+
     public:                                                 // opcodes handlers
 
         void Handle_NULL(WorldPacket& recvPacket);          // not used
@@ -1250,6 +1256,10 @@ class TC_GAME_API WorldSession
 
         WorldSession(WorldSession const& right) = delete;
         WorldSession& operator=(WorldSession const& right) = delete;
+
+        /*>MXB*/
+        bool _mxbBot = false;
+        /*<MXB*/
 };
 #endif
 /// @}

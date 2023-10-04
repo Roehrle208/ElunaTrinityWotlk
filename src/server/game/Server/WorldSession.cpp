@@ -211,6 +211,15 @@ void WorldSession::SendPacket(WorldPacket const* packet)
 {
     ASSERT(packet->GetOpcode() != NULL_OPCODE);
 
+    /*>MXB*/
+    if (_mxbBot)
+    {
+        //WorldPacket eachCopy(*packet);
+        //sRobotManager->HandlePacket(this, eachCopy);
+        return;
+    }
+    /*<MXB*/
+
     if (!m_Socket)
         return;
 
@@ -286,6 +295,29 @@ void WorldSession::LogUnprocessedTail(WorldPacket* packet)
 /// Update the WorldSession (triggered by World update)
 bool WorldSession::Update(uint32 diff, PacketFilter& updater)
 {
+    /*>MXB*/
+    if (_mxbBot) {
+        ProcessQueryCallbacks();
+
+        if (!_player)
+            return true;
+
+        if (_player->IsBeingTeleportedNear())
+        {
+            WorldPacket data(MSG_MOVE_TELEPORT_ACK, 10);
+            data << _player->GetGUID().WriteAsPacked();
+            data << uint32(0) << uint32(0);
+            HandleMoveTeleportAck(data);
+        }
+        else if (_player->IsBeingTeleportedFar())
+        {
+            HandleMoveWorldportAck();
+        }
+
+        return true;
+    }
+    /*<MXB*/
+
     ///- Before we process anything:
     /// If necessary, kick the player because the client didn't send anything for too long
     /// (or they've been idling in character select)

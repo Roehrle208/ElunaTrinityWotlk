@@ -703,6 +703,32 @@ void WorldSession::HandleCharDeleteOpcode(WorldPacket& recvData)
     SendCharDelete(CHAR_DELETE_SUCCESS);
 }
 
+/*>MXB*/
+void WorldSession::HandlePlayerLogin_Simple(ObjectGuid pmCharacterGUID)
+{
+    if (PlayerLoading() || GetPlayer() != nullptr)
+    {
+        TC_LOG_ERROR("network", "Player tries to login again, AccountId = %d", GetAccountId());
+        KickPlayer("WorldSession::HandlePlayerLoginOpcode Another client logging in");
+        return;
+    }
+
+    m_playerLoading = true;
+    std::shared_ptr<LoginQueryHolder> holder = std::make_shared<LoginQueryHolder>(GetAccountId(), pmCharacterGUID);
+
+    if (!holder->Initialize())
+    {
+        m_playerLoading = false;
+        return;
+    }
+
+    AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder)).AfterComplete([this](SQLQueryHolderBase const& holder)
+        {
+            HandlePlayerLogin(static_cast<LoginQueryHolder const&>(holder));
+        });
+}
+/*<MXB*/
+
 void WorldSession::HandlePlayerLoginOpcode(WorldPacket& recvData)
 {
     if (PlayerLoading() || GetPlayer() != nullptr)
@@ -1018,6 +1044,16 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
     sScriptMgr->OnPlayerLogin(pCurrChar, firstLogin);
 
     TC_METRIC_EVENT("player_events", "Login", pCurrChar->GetName());
+
+    /*>MXB*/
+    if (_mxbBot)
+    {
+        if (!sCharacterCache->HasCharacterCacheEntry(pCurrChar->GetGUID()))
+        {
+            sCharacterCache->AddCharacterCacheEntry(pCurrChar->GetGUID(), GetAccountId(), pCurrChar->GetName(), pCurrChar->GetGender(), pCurrChar->GetRace(), pCurrChar->GetClass(), pCurrChar->GetLevel());
+        }
+    }
+    /*<MXB*/
 }
 
 void WorldSession::SendFeatureSystemStatus()
