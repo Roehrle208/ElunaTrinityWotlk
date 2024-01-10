@@ -55,6 +55,11 @@
 #include "World.h"
 #include <G3D/Vector3.h>
 
+//npcbot
+#include "botdatamgr.h"
+#include "botmgr.h"
+//end npcbot
+
 constexpr float VisibilityDistances[AsUnderlyingType(VisibilityDistanceType::Max)] =
 {
     DEFAULT_VISIBILITY_DISTANCE,
@@ -1013,6 +1018,11 @@ void WorldObject::setActive(bool on)
     if (GetTypeId() == TYPEID_PLAYER)
         return;
 
+    //npcbot: bots should never be removed from active
+    if (on == false && IsNPCBotOrPet())
+        return;
+    //end npcbot
+
     m_isActive = on;
 
     if (on && !IsInWorld())
@@ -1664,7 +1674,9 @@ bool WorldObject::CanDetect(WorldObject const* obj, bool implicitDetect, bool ch
 {
     WorldObject const* seer = this;
 
-    // If a unit is possessing another one, it uses the detection of the latter
+    //npcbot: master's invisibility should not affect bots' sight
+    if (!IsNPCBot())
+    //end npcbot
     // Pets don't have detection, they use the detection of their masters
     if (Unit const* thisUnit = ToUnit())
     {
@@ -1954,6 +1966,11 @@ TempSummon* Map::SummonCreature(uint32 entry, Position const& pos, SummonPropert
             summon = new Puppet(properties, summonerUnit);
             break;
         case UNIT_MASK_TOTEM:
+            //npcbot: totem emul step 1
+            if (summoner && summoner->IsNPCBot())
+                summon = new Totem(properties, summoner->ToCreature()->GetBotOwner());
+            else
+            //end npcbot
             summon = new Totem(properties, summonerUnit);
             break;
         case UNIT_MASK_MINION:
@@ -1967,6 +1984,11 @@ TempSummon* Map::SummonCreature(uint32 entry, Position const& pos, SummonPropert
         return nullptr;
     }
 
+    //npcbot: totem emul step 2
+    if (summoner && summoner->IsNPCBot())
+        summon->SetCreatorGUID(summoner->GetGUID()); // see TempSummon::InitStats()
+    //end npcbot
+
     summon->SetCreatedBySpell(spellId);
 
     summon->SetHomePosition(pos);
@@ -1977,6 +1999,11 @@ TempSummon* Map::SummonCreature(uint32 entry, Position const& pos, SummonPropert
 
     AddToMap(summon->ToCreature());
     summon->InitSummon();
+
+    //npcbot: totem emul step 3
+    if (summoner && summoner->IsNPCBot())
+        summoner->ToCreature()->OnBotSummon(summon);
+    //end npcbot
 
     // call MoveInLineOfSight for nearby creatures
     Trinity::AIRelocationNotifier notifier(*summon);
@@ -2215,11 +2242,23 @@ Player* WorldObject::GetCharmerOrOwnerPlayerOrPlayerItself() const
     if (guid.IsPlayer())
         return ObjectAccessor::GetPlayer(*this, guid);
 
+    //npcbot
+    if (GetTypeId() == TYPEID_UNIT && ToCreature()->IsNPCBotOrPet())
+        if (Unit* creator = ToUnit()->GetCreator())
+            return creator->ToPlayer();
+    //end npcbot
+
     return const_cast<WorldObject*>(this)->ToPlayer();
 }
 
 Player* WorldObject::GetAffectingPlayer() const
 {
+    //npcbot: affecting player is creator
+    if (GetTypeId() == TYPEID_UNIT && ToCreature()->IsNPCBotOrPet())
+        if (Unit* creator = ToUnit()->GetCreator())
+            return creator->ToPlayer();
+    //end npcbot
+
     if (!GetCharmerOrOwnerGUID())
         return const_cast<WorldObject*>(this)->ToPlayer();
 
@@ -2305,12 +2344,36 @@ float WorldObject::ApplyEffectModifiers(SpellInfo const* spellInfo, uint8 effInd
                 break;
         }
     }
+
+    //npcbot: handle effect mods
+    if (IsNPCBot())
+        ToCreature()->ApplyCreatureEffectMods(spellInfo, effIndex, value);
+    //end npcbot
+
     return value;
 }
 
 int32 WorldObject::CalcSpellDuration(SpellInfo const* spellInfo) const
 {
     uint8 comboPoints = 0;
+    //npcbot
+    if (IsNPCBot())
+        comboPoints = ToCreature()->GetCreatureComboPoints();
+    else
+    //npcbot: combo points support for spell duration (vehicle)
+    if (ToCreature() && ToCreature()->IsVehicle() && ToCreature()->GetCharmerGUID().IsCreature() &&
+        spellInfo->GetDuration() != spellInfo->GetMaxDuration())
+    {
+        Unit const* bot = ToCreature()->GetCharmer();
+        if (bot && bot->IsNPCBot())
+        {
+            comboPoints = bot->ToCreature()->GetCreatureComboPoints();
+            //TC_LOG_ERROR("scripts", "CalcSpellDuration bot {} veh spell {} cp {}",
+            //    bot->GetName(), spellProto->Id, uint32(comboPoints));
+        }
+    }
+    else
+    //end npcbot
     if (Unit const* unit = ToUnit())
         comboPoints = unit->GetComboPoints();
 
@@ -2429,6 +2492,11 @@ void WorldObject::ModSpellCastTime(SpellInfo const* spellInfo, int32& castTime, 
     if (Player* modOwner = GetSpellModOwner())
         modOwner->ApplySpellMod(spellInfo->Id, SPELLMOD_CASTING_TIME, castTime, spell);
 
+    //npcbot - apply bot spell cast time mods
+    if (castTime > 0 && IsNPCBot())
+        ToCreature()->ApplyCreatureSpellCastTimeMods(spellInfo, castTime);
+    //end npcbot
+
     Unit const* unitCaster = ToUnit();
     if (!unitCaster)
         return;
@@ -2453,6 +2521,11 @@ void WorldObject::ModSpellDurationTime(SpellInfo const* spellInfo, int32& durati
     // called from caster
     if (Player* modOwner = GetSpellModOwner())
         modOwner->ApplySpellMod(spellInfo->Id, SPELLMOD_CASTING_TIME, duration, spell);
+
+    //npcbot - apply bot spell cast time mods
+    if (duration > 0 && IsNPCBot())
+        ToCreature()->ApplyCreatureSpellCastTimeMods(spellInfo, duration);
+    //end npcbot
 
     Unit const* unitCaster = ToUnit();
     if (!unitCaster)
@@ -2521,6 +2594,11 @@ SpellMissInfo WorldObject::MagicSpellHitResult(Unit* victim, SpellInfo const* sp
     // Increase hit chance from attacker SPELL_AURA_MOD_SPELL_HIT_CHANCE and attacker ratings
     if (Unit const* unit = ToUnit())
         HitChance += int32(unit->m_modSpellHitChance * 100.0f);
+
+    //npcbot: spell hit chance bonus
+    if (IsNPCBot())
+        HitChance -= int32(ToCreature()->GetCreatureMissChance() * 100.f);
+    //end npcbot
 
     RoundToInterval(HitChance, 0, 10000);
 
@@ -2697,10 +2775,20 @@ ReputationRank WorldObject::GetReactionTo(WorldObject const* target) const
 
     Unit const* unit = Coalesce<const Unit>(ToUnit(), selfPlayerOwner);
     Unit const* targetUnit = Coalesce<const Unit>(target->ToUnit(), targetPlayerOwner);
+    //npcbot
+    /*
     if (unit && unit->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED))
     {
         if (targetUnit && targetUnit->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED))
         {
+    */
+    if (unit && (unit->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) || unit->IsNPCBotOrPet()))
+    {
+        if (targetUnit && (targetUnit->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) || targetUnit->IsNPCBotOrPet()))
+        {
+            if (unit->IsInRaidWith(targetUnit))
+                return REP_FRIENDLY;
+    //end npcbot
             if (selfPlayerOwner && targetPlayerOwner)
             {
                 // always friendly to other unit controlled by player, or to the player himself
@@ -2771,6 +2859,16 @@ ReputationRank WorldObject::GetReactionTo(WorldObject const* target) const
         if ((factionTemplateEntry->Flags & FACTION_TEMPLATE_FLAG_CONTESTED_GUARD) &&
             targetPlayerOwner->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_CONTESTED_PVP))
             return REP_HOSTILE;
+
+        //npcbot
+        if (target->IsNPCBotOrPet() && (factionTemplateEntry->Flags & FACTION_TEMPLATE_FLAG_CONTESTED_GUARD))
+        {
+            Unit const* bot = target->IsNPCBotPet() ? static_cast<Unit*>(targetPlayerOwner->GetBotMgr()->GetBot(target->GetOwnerGUID())) : target->ToUnit();
+            if (bot && bot->IsNPCBot() && BotMgr::IsBotContestedPvP(bot->ToCreature()))
+                return REP_HOSTILE;
+        }
+        //end npcbot
+
         if (ReputationRank const* repRank = targetPlayerOwner->GetReputationMgr().GetForcedRankIfAny(factionTemplateEntry))
             return *repRank;
         if (target->IsUnit() && !target->ToUnit()->HasUnitFlag2(UNIT_FLAG2_IGNORE_REPUTATION))
@@ -2788,6 +2886,14 @@ ReputationRank WorldObject::GetReactionTo(WorldObject const* target) const
             }
         }
     }
+    //npcbot: contested guards reaction to bots in contested PvP mode
+    else if (target->IsNPCBotOrPet() && (factionTemplateEntry->Flags & FACTION_TEMPLATE_FLAG_CONTESTED_GUARD))
+    {
+        Unit const* bot = target->IsNPCBotPet() ? target->ToUnit()->GetCreator() : target->ToUnit();
+        if (bot && bot->IsNPCBot() && BotMgr::IsBotContestedPvP(bot->ToCreature()))
+            return REP_HOSTILE;
+    }
+    //end npcbot
 
     // common faction based check
     if (factionTemplateEntry->IsHostileTo(*targetFactionTemplateEntry))
@@ -2847,6 +2953,10 @@ SpellCastResult WorldObject::CastSpell(CastSpellTargetArg const& targets, uint32
         return SPELL_FAILED_SPELL_UNAVAILABLE;
     }
 
+    //npcbot: try override
+    info = info->TryGetSpellInfoOverride(this);
+    //end npcbot
+
     if (!targets.Targets)
     {
         TC_LOG_ERROR("entities.unit", "CastSpell: Invalid target passed to spell cast {} by {}", spellId, GetGUID().ToString());
@@ -2881,6 +2991,11 @@ bool WorldObject::IsValidAttackTarget(WorldObject const* target, SpellInfo const
     // can't attack GMs
     if (target->GetTypeId() == TYPEID_PLAYER && target->ToPlayer()->IsGameMaster())
         return false;
+
+    //npcbot: can't attack unit if controlled by a GM (bots, pets, possible others)
+    if (unitTarget && unitTarget->IsControlledByPlayer() && unitTarget->GetFaction() == 35)
+        return false;
+    //end npcbot
 
     Unit const* unit = ToUnit();
     // visibility checks (only units)
@@ -2918,6 +3033,9 @@ bool WorldObject::IsValidAttackTarget(WorldObject const* target, SpellInfo const
         unitOrOwner = go->GetOwner();
 
     // ignore immunity flags when assisting
+    //npcbot: rewrite all that
+    /*
+    //end npcbot
     if (unitOrOwner && unitTarget && !(isPositiveSpell && bySpell->HasAttribute(SPELL_ATTR6_ASSIST_IGNORE_IMMUNE_FLAG)))
     {
         if (!unitOrOwner->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) && unitTarget->IsImmuneToNPC())
@@ -2932,7 +3050,61 @@ bool WorldObject::IsValidAttackTarget(WorldObject const* target, SpellInfo const
         if (unitTarget->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) && unitOrOwner->IsImmuneToPC())
             return false;
     }
+    //npcbot
+    */
+    if (unitOrOwner && unitTarget && !(isPositiveSpell && bySpell->HasAttribute(SPELL_ATTR6_ASSIST_IGNORE_IMMUNE_FLAG)))
+    {
+        if (!unitOrOwner->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) && !unitOrOwner->IsNPCBotOrPet() && unitTarget->IsImmuneToNPC())
+            return false;
 
+        if (!unitTarget->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) && !unitTarget->IsNPCBotOrPet() && unitOrOwner->IsImmuneToNPC())
+            return false;
+
+        if ((unitOrOwner->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) || unitOrOwner->IsNPCBotOrPet()) && unitTarget->IsImmuneToPC())
+            return false;
+
+        if ((unitTarget->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) || unitTarget->IsNPCBotOrPet()) && unitOrOwner->IsImmuneToPC())
+            return false;
+    }
+    //end npcbot
+
+    //npcbot: CvB, BvC case
+    if (unit && unitTarget &&
+        ((IsNPCBotOrPet() && ToCreature()->IsFreeBot()) || (target->IsNPCBotOrPet() && target->ToCreature()->IsFreeBot())) &&
+        !IsFriendlyTo(unitTarget) && !unitTarget->IsFriendlyTo(this))
+    {
+        if (unitTarget->IsNPCBotOrPet() && unit->IsContestedGuard())
+        {
+            if (Unit const* bot = unitTarget->IsNPCBotPet() ? unitTarget->GetCreator() : unitTarget)
+            {
+                if (BotMgr::IsBotContestedPvP(bot->ToCreature()))
+                    return true;
+            }
+        }
+        else if (unit->IsNPCBotOrPet() && unitTarget->IsContestedGuard())
+        {
+            if (Unit const* bot = unit->IsNPCBotPet() ? unit->GetCreator() : unit)
+            {
+                if (BotMgr::IsBotContestedPvP(bot->ToCreature()))
+                    return true;
+            }
+        }
+
+        auto const* ft1 = sFactionTemplateStore.LookupEntry(unit->GetFaction());
+        auto const* ft2 = sFactionTemplateStore.LookupEntry(unitTarget->GetFaction());
+        auto const* fe1 = ft1 ? sFactionStore.LookupEntry(ft1->Faction) : nullptr;
+        auto const* fe2 = ft2 ? sFactionStore.LookupEntry(ft2->Faction) : nullptr;
+        if ((IsNPCBotOrPet() && fe2 && fe2->CanHaveReputation() && ReputationMgr::ReputationToRank(BotDataMgr::GetBotBaseReputation(unit->ToCreature(), fe2)) >= REP_NEUTRAL) ||
+            (target->IsNPCBotOrPet() && fe1 && fe1->CanHaveReputation() && ReputationMgr::ReputationToRank(BotDataMgr::GetBotBaseReputation(unitTarget->ToCreature(), fe1)) >= REP_NEUTRAL))
+            return false;
+    }
+    //end npcbot
+
+    //npcbot
+    if (unit && unitTarget && (unit->IsNPCBotOrPet() || unitTarget->IsNPCBotOrPet()))
+    {}
+    else
+    //end npcbot
     // CvC case - can attack each other only when one of them is hostile
     if (unit && !unit->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) && unitTarget && !unitTarget->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED))
         return IsHostileTo(unitTarget) || unitTarget->IsHostileTo(this);
@@ -2953,6 +3125,13 @@ bool WorldObject::IsValidAttackTarget(WorldObject const* target, SpellInfo const
 
     Player const* playerAffectingAttacker = unit && unit->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) ? GetAffectingPlayer() : go ? GetAffectingPlayer() : nullptr;
     Player const* playerAffectingTarget = unitTarget && unitTarget->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) ? unitTarget->GetAffectingPlayer() : nullptr;
+
+    //npcbot: get affectingplayers for bots
+    if (!playerAffectingAttacker && unit && unit->IsNPCBotOrPet())
+        playerAffectingAttacker = unit->GetAffectingPlayer();
+    if (!playerAffectingTarget && unitTarget && unitTarget->IsNPCBotOrPet())
+        playerAffectingTarget = unitTarget->GetAffectingPlayer();
+    //end npcbot
 
     // Not all neutral creatures can be attacked (even some unfriendly faction does not react aggresive to you, like Sporaggar)
     if ((playerAffectingAttacker && !playerAffectingTarget) || (!playerAffectingAttacker && playerAffectingTarget))
@@ -2989,6 +3168,13 @@ bool WorldObject::IsValidAttackTarget(WorldObject const* target, SpellInfo const
     if (unitTarget && unitTarget->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) && unitOrOwner && unitOrOwner->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) && (unitTarget->IsInSanctuary() || unitOrOwner->IsInSanctuary()))
         return false;
 
+    //npcbot: BvP, PvB, BvB sanctuary case
+    if (unitTarget && (unitTarget->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) || unitTarget->IsNPCBotOrPet()) &&
+        unitOrOwner && (unitOrOwner->HasUnitFlag(UNIT_FLAG_PLAYER_CONTROLLED) || unitOrOwner->IsNPCBotOrPet()) &&
+        (unitTarget->IsInSanctuary() || unitOrOwner->IsInSanctuary()))
+        return false;
+    //end npcbot
+
     // additional checks - only PvP case
     if (playerAffectingAttacker && playerAffectingTarget)
     {
@@ -3001,6 +3187,21 @@ bool WorldObject::IsValidAttackTarget(WorldObject const* target, SpellInfo const
         return playerAffectingAttacker->HasPvpFlag(UNIT_BYTE2_FLAG_UNK1) ||
             playerAffectingTarget->HasPvpFlag(UNIT_BYTE2_FLAG_UNK1);
     }
+    //npcbot: BvP checks
+    else if (playerAffectingTarget && !playerAffectingAttacker && unit && unit->IsNPCBotOrPet())
+    {
+        if (Unit const* bot = unit->IsNPCBotPet() ? unit->GetCreator() : unit)
+        {
+            if (playerAffectingTarget->IsPvP())
+                return true;
+
+            if (bot->IsFFAPvP() && playerAffectingTarget->IsFFAPvP())
+                return true;
+
+            return bot->HasPvpFlag(UNIT_BYTE2_FLAG_UNK1) || playerAffectingTarget->HasPvpFlag(UNIT_BYTE2_FLAG_UNK1);
+        }
+    }
+    //end npcbot
 
     return true;
 }
@@ -3060,6 +3261,13 @@ bool WorldObject::IsValidAssistTarget(WorldObject const* target, SpellInfo const
             if (unitTarget && unitTarget->IsImmuneToPC())
                 return false;
         }
+        //npcbot
+        else if (unit && unit->IsNPCBotOrPet())
+        {
+            if (unitTarget && unitTarget->IsImmuneToPC())
+                return false;
+        }
+        //end npcbot
         else
         {
             if (unitTarget && unitTarget->IsImmuneToNPC())
@@ -3103,6 +3311,20 @@ bool WorldObject::IsValidAssistTarget(WorldObject const* target, SpellInfo const
                 if (Creature const* creatureTarget = target->ToCreature())
                     return ((creatureTarget->GetCreatureTemplate()->type_flags & CREATURE_TYPE_FLAG_TREAT_AS_RAID_UNIT) || (creatureTarget->GetCreatureTemplate()->type_flags & CREATURE_TYPE_FLAG_CAN_ASSIST));
     }
+
+    //npcbot: PvP (BvB) case
+    if (unit && unit->IsNPCBotOrPet() && unitTarget && unitTarget->IsNPCBotOrPet())
+    {
+        Player const* selfPlayerOwner = GetAffectingPlayer();
+        Player const* targetPlayerOwner = unitTarget->GetAffectingPlayer();
+        if (selfPlayerOwner && targetPlayerOwner && selfPlayerOwner != targetPlayerOwner && targetPlayerOwner->duel)
+            return false;
+        if (unitTarget->IsFFAPvP() && !unit->IsFFAPvP())
+            return false;
+        if (unitTarget->IsPvP() && unit->IsInSanctuary() && !unitTarget->IsInSanctuary())
+            return false;
+    }
+    //end npcbot
 
     return true;
 }
@@ -3239,7 +3461,7 @@ Position WorldObject::GetNearPosition(float dist, float angle)
     return pos;
 }
 
-Position WorldObject::GetFirstCollisionPosition(float dist, float angle)
+Position WorldObject::GetFirstCollisionPosition(float dist, float angle) const
 {
     Position pos = GetPosition();
     MovePositionToFirstCollision(pos, dist, angle);
@@ -3305,7 +3527,7 @@ void WorldObject::MovePosition(Position &pos, float dist, float angle)
     pos.SetOrientation(GetOrientation());
 }
 
-void WorldObject::MovePositionToFirstCollision(Position &pos, float dist, float angle)
+void WorldObject::MovePositionToFirstCollision(Position &pos, float dist, float angle) const
 {
     angle += GetOrientation();
     float destx, desty, destz;
