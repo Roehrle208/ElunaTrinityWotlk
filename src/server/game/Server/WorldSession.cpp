@@ -26,6 +26,7 @@
 #include "CharacterPackets.h"
 #include "Config.h"
 #include "Common.h"
+#include "Containers.h"
 #include "DatabaseEnv.h"
 #include "DBCStructure.h"
 #include "GameClient.h"
@@ -110,13 +111,14 @@ bool WorldSessionFilter::Process(WorldPacket* packet)
 }
 
 /// WorldSession constructor
-WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldSocket> sock, AccountTypes sec, uint8 expansion, time_t mute_time, LocaleConstant locale, uint32 recruiter, bool isARecruiter):
+WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldSocket> sock, AccountTypes sec, uint8 expansion, time_t mute_time,
+    Minutes timezoneOffset, LocaleConstant locale, uint32 recruiter, bool isARecruiter):
     m_muteTime(mute_time),
     m_timeOutTime(0),
     AntiDOS(this),
     m_GUIDLow(0),
     _player(nullptr),
-    m_Socket(sock),
+    m_Socket(std::move(sock)),
     _security(sec),
     _accountId(id),
     _accountName(std::move(name)),
@@ -129,6 +131,7 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
     m_playerSave(false),
     m_sessionDbcLocale(sWorld->GetAvailableDbcLocale(locale)),
     m_sessionDbLocaleIndex(locale),
+    _timezoneOffset(timezoneOffset),
     m_latency(0),
     m_TutorialsChanged(TUTORIALS_FLAG_NONE),
     recruiterId(recruiter),
@@ -147,9 +150,9 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
 {
     memset(m_Tutorials, 0, sizeof(m_Tutorials));
 
-    if (sock)
+    if (m_Socket)
     {
-        m_Address = sock->GetRemoteIpAddress().to_string();
+        m_Address = m_Socket->GetRemoteIpAddress().to_string();
         ResetTimeOutTime(false);
         LoginDatabase.PExecute("UPDATE account SET online = 1 WHERE id = {};", GetAccountId());     // One-time query
     }
@@ -189,15 +192,13 @@ std::string const & WorldSession::GetPlayerName() const
 
 std::string WorldSession::GetPlayerInfo() const
 {
-    std::ostringstream ss;
+    if (_player)
+        return Trinity::StringFormat("[Player: {} {}, Account: {}]", _player->GetName(), _player->GetGUID(), GetAccountId());
 
-    ss << "[Player: ";
-    if (!m_playerLoading && _player)
-        ss << _player->GetName() << ' ' << _player->GetGUID().ToString() << ", ";
+    if (m_playerLoading)
+        return Trinity::StringFormat("[Player: Logging in, Account: {}]", GetAccountId());
 
-    ss << "Account: " << GetAccountId() << "]";
-
-    return ss.str();
+    return Trinity::StringFormat("[Player: Account: {}]", GetAccountId());
 }
 
 /// Get player guid if available. Use for logging purposes only
@@ -260,8 +261,14 @@ void WorldSession::SendPacket(WorldPacket const* packet)
     sScriptMgr->OnPacketSend(this, *packet);
 
 #ifdef ELUNA
-    if (!sEluna->OnPacketSend(this, *packet))
-        return;
+    if (Player* plr = GetPlayer())
+    {
+        if (Eluna* e = plr->GetEluna())
+        {
+            if (!e->OnPacketSend(this, *packet))
+                return;
+        }
+    }
 #endif
 
     TC_LOG_TRACE("network.opcode", "S->C: {} {}", GetPlayerInfo(), GetOpcodeNameForLogging(static_cast<OpcodeServer>(packet->GetOpcode())));
@@ -365,8 +372,9 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
                         {
                             sScriptMgr->OnPacketReceive(this, *packet);
 #ifdef ELUNA
-                            if (!sEluna->OnPacketReceive(this, *packet))
-                                break;
+                            if (Eluna* e = sWorld->GetEluna())
+                                if (!e->OnPacketReceive(this, *packet))
+                                    break;
 #endif
                             opHandle->Call(this, *packet);
                             LogUnprocessedTail(packet);
@@ -385,8 +393,9 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
                         // not expected _player or must checked in packet hanlder
                         sScriptMgr->OnPacketReceive(this, *packet);
 #ifdef ELUNA
-                        if (!sEluna->OnPacketReceive(this, *packet))
-                            break;
+                        if (Eluna* e = sWorld->GetEluna())
+                            if (!e->OnPacketReceive(this, *packet))
+                                break;
 #endif
                         opHandle->Call(this, *packet);
                         LogUnprocessedTail(packet);
@@ -403,8 +412,9 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
                     {
                         sScriptMgr->OnPacketReceive(this, *packet);
 #ifdef ELUNA
-                        if (!sEluna->OnPacketReceive(this, *packet))
-                            break;
+                        if (Eluna* e = sWorld->GetEluna())
+                            if (!e->OnPacketReceive(this, *packet))
+                                break;
 #endif
                         opHandle->Call(this, *packet);
                         LogUnprocessedTail(packet);
@@ -429,8 +439,9 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
                     {
                         sScriptMgr->OnPacketReceive(this, *packet);
 #ifdef ELUNA
-                        if (!sEluna->OnPacketReceive(this, *packet))
-                            break;
+                        if (Eluna* e = sWorld->GetEluna())
+                            if (!e->OnPacketReceive(this, *packet))
+                                break;
 #endif
                         opHandle->Call(this, *packet);
                         LogUnprocessedTail(packet);
@@ -586,7 +597,8 @@ void WorldSession::LogoutPlayer(bool save)
 
         for (int i=0; i < PLAYER_MAX_BATTLEGROUND_QUEUES; ++i)
         {
-            if (BattlegroundQueueTypeId bgQueueTypeId = _player->GetBattlegroundQueueTypeId(i))
+            BattlegroundQueueTypeId bgQueueTypeId = _player->GetBattlegroundQueueTypeId(i);
+            if (bgQueueTypeId != BATTLEGROUND_QUEUE_NONE)
             {
                 // track if player logs out after invited to join BG
                 if (_player->IsInvitedForBattlegroundQueueType(bgQueueTypeId) && sWorld->getBoolConfig(CONFIG_BATTLEGROUND_TRACK_DESERTERS))
@@ -613,7 +625,7 @@ void WorldSession::LogoutPlayer(bool save)
             guild->HandleMemberLogout(this);
 
         ///- Remove pet
-        _player->RemovePet(nullptr, PET_SAVE_AS_CURRENT, true);
+        _player->RemovePet(nullptr, PET_SAVE_AS_CURRENT);
 
         ///- Clear whisper whitelist
         _player->ClearWhisperWhiteList();
@@ -941,6 +953,66 @@ void WorldSession::SaveTutorialsData(CharacterDatabaseTransaction trans)
         m_TutorialsChanged |= TUTORIALS_FLAG_LOADED_FROM_DB;
 
     m_TutorialsChanged &= ~TUTORIALS_FLAG_CHANGED;
+}
+
+void WorldSession::LoadInstanceTimeRestrictions(PreparedQueryResult result)
+{
+    if (!result)
+        return;
+
+    SystemTimePoint now = GameTime::GetSystemTime();
+    do
+    {
+        Field* fields = result->Fetch();
+        SystemTimePoint restrictionExpireTime = SystemTimePoint::clock::from_time_t(fields[1].GetUInt64());
+        if (restrictionExpireTime > now)
+            _instanceResetTimes.try_emplace(fields[0].GetUInt32(), restrictionExpireTime);
+    } while (result->NextRow());
+}
+
+void WorldSession::SaveInstanceTimeRestrictions(CharacterDatabaseTransaction trans)
+{
+    if (_instanceResetTimes.empty())
+        return;
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_ACCOUNT_INSTANCE_LOCK_TIMES);
+    stmt->setUInt32(0, GetAccountId());
+    trans->Append(stmt);
+
+    for (auto const& [instanceId, restrictionExpireTime] : _instanceResetTimes)
+    {
+        stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_ACCOUNT_INSTANCE_LOCK_TIMES);
+        stmt->setUInt32(0, GetAccountId());
+        stmt->setUInt32(1, instanceId);
+        stmt->setUInt64(2, SystemTimePoint::clock::to_time_t(restrictionExpireTime));
+        trans->Append(stmt);
+    }
+}
+
+bool WorldSession::UpdateAndCheckInstanceCount(uint32 instanceId)
+{
+    UpdateInstanceEnterTimes();
+
+    if (_instanceResetTimes.size() < sWorld->getIntConfig(CONFIG_MAX_INSTANCES_PER_HOUR))
+        return true;
+
+    if (instanceId == 0)
+        return false;
+
+    return _instanceResetTimes.contains(instanceId);
+}
+
+void WorldSession::AddInstanceEnterTime(uint32 instanceId, SystemTimePoint enterTime)
+{
+    _instanceResetTimes.try_emplace(instanceId, enterTime + 1h);
+}
+
+void WorldSession::UpdateInstanceEnterTimes()
+{
+    Trinity::Containers::EraseIf(_instanceResetTimes, [now = GameTime::GetSystemTime()](std::pair<uint32 const, SystemTimePoint> const& value)
+    {
+        return value.second < now;
+    });
 }
 
 void WorldSession::ReadMovementInfo(WorldPacket &data, MovementInfo* mi)
@@ -1344,6 +1416,7 @@ public:
     {
         GLOBAL_ACCOUNT_DATA = 0,
         TUTORIALS,
+        INSTANCE_TIMES,
 
         MAX_QUERIES
     };
@@ -1361,6 +1434,10 @@ public:
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_TUTORIALS);
         stmt->setUInt32(0, accountId);
         ok = SetPreparedQuery(TUTORIALS, stmt) && ok;
+
+        stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_ACCOUNT_INSTANCELOCKTIMES);
+        stmt->setUInt32(0, accountId);
+        ok = SetPreparedQuery(INSTANCE_TIMES, stmt) && ok;
 
         return ok;
     }
@@ -1385,6 +1462,7 @@ void WorldSession::InitializeSessionCallback(CharacterDatabaseQueryHolder const&
 {
     LoadAccountData(realmHolder.GetPreparedResult(AccountInfoQueryHolderPerRealm::GLOBAL_ACCOUNT_DATA), GLOBAL_CACHE_MASK);
     LoadTutorialsData(realmHolder.GetPreparedResult(AccountInfoQueryHolderPerRealm::TUTORIALS));
+    LoadInstanceTimeRestrictions(realmHolder.GetPreparedResult(AccountInfoQueryHolderPerRealm::INSTANCE_TIMES));
 
     if (!m_inQueue)
         SendAuthResponse(AUTH_OK, true);
@@ -1399,7 +1477,7 @@ void WorldSession::InitializeSessionCallback(CharacterDatabaseQueryHolder const&
     SendTutorialsData();
 }
 
-rbac::RBACData* WorldSession::GetRBACData()
+rbac::RBACData* WorldSession::GetRBACData() const
 {
     return _RBACData;
 }

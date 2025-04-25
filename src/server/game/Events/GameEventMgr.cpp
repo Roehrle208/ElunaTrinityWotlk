@@ -142,14 +142,15 @@ bool GameEventMgr::StartEvent(uint16 event_id, bool overwrite)
         {
             mGameEvent[event_id].start = GameTime::GetGameTime();
             if (data.end <= data.start)
-                data.end = data.start + data.length;
+                data.end = data.start + data.length * MINUTE;
         }
 
         // When event is started, set its worldstate to current time
         sWorld->setWorldState(event_id, GameTime::GetGameTime());
 #ifdef ELUNA
         if (IsActiveEvent(event_id))
-            sEluna->OnGameEventStart(event_id);
+            if (Eluna* e = sWorld->GetEluna())
+                e->OnGameEventStart(event_id);
 #endif
         return false;
     }
@@ -176,7 +177,8 @@ bool GameEventMgr::StartEvent(uint16 event_id, bool overwrite)
 
 #ifdef ELUNA
         if (IsActiveEvent(event_id))
-            sEluna->OnGameEventStart(event_id);
+            if (Eluna* e = sWorld->GetEluna())
+                e->OnGameEventStart(event_id);
 #endif
         return conditions_met;
     }
@@ -197,7 +199,7 @@ void GameEventMgr::StopEvent(uint16 event_id, bool overwrite)
     {
         data.start = GameTime::GetGameTime() - data.length * MINUTE;
         if (data.end <= data.start)
-            data.end = data.start + data.length;
+            data.end = data.start + data.length * MINUTE;
     }
     else if (serverwide_evt)
     {
@@ -226,7 +228,8 @@ void GameEventMgr::StopEvent(uint16 event_id, bool overwrite)
 
 #ifdef ELUNA
     if (!IsActiveEvent(event_id))
-        sEluna->OnGameEventStop(event_id);
+        if (Eluna* e = sWorld->GetEluna())
+            e->OnGameEventStop(event_id);
 #endif
 }
 

@@ -32,6 +32,9 @@
 #include "Player.h"
 #include "World.h"
 #include "WorldPacket.h"
+#ifdef ELUNA
+#include "LuaEngine.h"
+#endif
 
 bool WorldSession::CanOpenMailBox(ObjectGuid guid)
 {
@@ -127,16 +130,16 @@ void WorldSession::HandleSendMail(WorldPackets::Mail::SendMail& sendMail)
         return;
     }
 
-    if (!player->HasEnoughMoney(reqmoney) && !player->IsGameMaster())
-    {
-        player->SendMailResult(0, MAIL_SEND, MAIL_ERR_NOT_ENOUGH_MONEY);
-        return;
-    }
-
     auto mailCountCheckContinuation = [this, player = _player, receiverGuid, mailInfo = std::move(sendMail.Info), reqmoney, cost](uint32 receiverTeam, uint64 mailsCount, uint8 receiverLevel, uint32 receiverAccountId) mutable
     {
         if (_player != player)
             return;
+
+        if (!player->HasEnoughMoney(reqmoney) && !player->IsGameMaster())
+        {
+            player->SendMailResult(0, MAIL_SEND, MAIL_ERR_NOT_ENOUGH_MONEY);
+            return;
+        }
 
         // do not allow to have more than 100 mails in mailbox.. mails count is in opcode uint8!!! - so max can be 255..
         if (mailsCount > 100)
@@ -194,7 +197,7 @@ void WorldSession::HandleSendMail(WorldPackets::Mail::SendMail& sendMail)
             // handle empty bag before CanBeTraded, since that func already has that check
             if (item->IsNotEmptyBag())
             {
-                player->SendMailResult(0, MAIL_SEND, MAIL_ERR_EQUIP_ERROR, EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS);
+                player->SendMailResult(0, MAIL_SEND, MAIL_ERR_EQUIP_ERROR, EQUIP_ERR_DESTROY_NONEMPTY_BAG);
                 return;
             }
 
@@ -206,7 +209,7 @@ void WorldSession::HandleSendMail(WorldPackets::Mail::SendMail& sendMail)
 
             if (item->IsBoundAccountWide() && item->IsSoulBound() && GetAccountId() != receiverAccountId)
             {
-                player->SendMailResult(0, MAIL_SEND, MAIL_ERR_EQUIP_ERROR, EQUIP_ERR_ARTEFACTS_ONLY_FOR_OWN_CHARACTERS);
+                player->SendMailResult(0, MAIL_SEND, MAIL_ERR_EQUIP_ERROR, EQUIP_ERR_NOT_SAME_ACCOUNT);
                 return;
             }
 
@@ -224,6 +227,17 @@ void WorldSession::HandleSendMail(WorldPackets::Mail::SendMail& sendMail)
 
             items.push_back(item);
         }
+
+#ifdef ELUNA
+        if (Eluna* e = player->GetEluna())
+        {
+            if (!e->OnSendMail(player, receiverGuid))
+            {
+                player->SendMailResult(0, MAIL_SEND, MAIL_ERR_EQUIP_ERROR, EQUIP_ERR_CLIENT_LOCKED_OUT);
+                return;
+            }
+        }
+#endif
 
         player->SendMailResult(0, MAIL_SEND, MAIL_OK);
 

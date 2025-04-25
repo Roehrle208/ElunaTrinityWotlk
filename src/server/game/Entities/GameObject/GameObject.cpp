@@ -111,7 +111,7 @@ QuaternionData QuaternionData::fromEulerAnglesZYX(float Z, float Y, float X)
 }
 
 GameObject::GameObject() : WorldObject(false), MapObject(),
-    m_model(nullptr), m_goValue(), m_AI(nullptr), m_respawnCompatibilityMode(false)
+    m_model(nullptr), m_goValue(), m_stringIds(), m_AI(nullptr), m_respawnCompatibilityMode(false)
 {
     m_objectType |= TYPEMASK_GAMEOBJECT;
     m_objectTypeId = TYPEID_GAMEOBJECT;
@@ -231,7 +231,12 @@ void GameObject::AddToWorld()
         WorldObject::AddToWorld();
 
 #ifdef ELUNA
-        sEluna->OnAddToWorld(this);
+        if (Eluna* e = GetEluna())
+        {
+            // one of these should really be deprecated, they serve the exact same purpose
+            e->OnAddToWorld(this);
+            e->OnSpawn(this);
+        }
 #endif
     }
 }
@@ -242,7 +247,8 @@ void GameObject::RemoveFromWorld()
     if (IsInWorld())
     {
 #ifdef ELUNA
-        sEluna->OnRemoveFromWorld(this);
+        if (Eluna* e = GetEluna())
+            e->OnRemoveFromWorld(this);
 #endif
         if (m_zoneScript)
             m_zoneScript->OnGameObjectRemove(this);
@@ -427,6 +433,9 @@ bool GameObject::Create(ObjectGuid::LowType guidlow, uint32 name_id, Map* map, u
     }
 
     LastUsedScriptID = GetGOInfo()->ScriptId;
+
+    m_stringIds[AsUnderlyingType(StringIdType::Template)] = &goinfo->StringId;
+
     AIM_Initialize();
 
     // Initialize loot duplicate count depending on raid difficulty
@@ -462,7 +471,13 @@ bool GameObject::Create(ObjectGuid::LowType guidlow, uint32 name_id, Map* map, u
 void GameObject::Update(uint32 diff)
 {
 #ifdef ELUNA
-    sEluna->UpdateAI(this, diff);
+    if (Eluna* e = GetEluna())
+    {
+        e->UpdateAI(this, diff);
+
+        if (elunaEvents) // can be null on maps without eluna
+            elunaEvents->Update(diff);
+    }
 #endif
     m_Events.Update(diff);
 
@@ -1155,6 +1170,8 @@ bool GameObject::LoadFromDB(ObjectGuid::LowType spawnId, Map* map, bool addToMap
 
     m_goData = data;
 
+    m_stringIds[AsUnderlyingType(StringIdType::Spawn)] = &data->StringId;
+
     if (addToMap && !GetMap()->AddToMap(this))
         return false;
 
@@ -1634,8 +1651,9 @@ void GameObject::Use(Unit* user)
         playerUser->PlayerTalkClass->ClearMenus();
 
 #ifdef ELUNA
-        if (sEluna->OnGossipHello(playerUser, this))
-            return;
+        if (Eluna* e = GetEluna())
+            if (e->OnGossipHello(playerUser, this))
+                return;
 #endif
         if (AI()->OnGossipHello(playerUser))
             return;
@@ -2288,6 +2306,34 @@ uint32 GameObject::GetScriptId() const
     return GetGOInfo()->ScriptId;
 }
 
+void GameObject::InheritStringIds(GameObject const* parent)
+{
+    // copy references to stringIds from template and spawn
+    m_stringIds = parent->m_stringIds;
+
+    // then copy script stringId, not just its reference
+    SetScriptStringId(std::string(parent->GetStringId(StringIdType::Script)));
+}
+
+bool GameObject::HasStringId(std::string_view id) const
+{
+    return std::ranges::any_of(m_stringIds, [id](std::string const* stringId) { return stringId && *stringId == id; });
+}
+
+void GameObject::SetScriptStringId(std::string id)
+{
+    if (!id.empty())
+    {
+        m_scriptStringId.emplace(std::move(id));
+        m_stringIds[AsUnderlyingType(StringIdType::Script)] = &*m_scriptStringId;
+    }
+    else
+    {
+        m_scriptStringId.reset();
+        m_stringIds[AsUnderlyingType(StringIdType::Script)] = nullptr;
+    }
+}
+
 // overwrite WorldObject function for proper name localization
 std::string const & GameObject::GetNameForLocaleIdx(LocaleConstant loc_idx) const
 {
@@ -2426,7 +2472,8 @@ void GameObject::SetDestructibleState(GameObjectDestructibleState state, WorldOb
         case GO_DESTRUCTIBLE_DAMAGED:
         {
 #ifdef ELUNA
-            sEluna->OnDamaged(this, attackerOrHealer);
+            if (Eluna* e = GetEluna())
+                e->OnDamaged(this, attackerOrHealer);
 #endif
             EventInform(m_goInfo->building.damagedEvent, attackerOrHealer);
             AI()->Damaged(attackerOrHealer, m_goInfo->building.damagedEvent);
@@ -2454,7 +2501,8 @@ void GameObject::SetDestructibleState(GameObjectDestructibleState state, WorldOb
         case GO_DESTRUCTIBLE_DESTROYED:
         {
 #ifdef ELUNA
-            sEluna->OnDestroyed(this, attackerOrHealer);
+            if (Eluna* e = GetEluna())
+                e->OnDestroyed(this, attackerOrHealer);
 #endif
             EventInform(m_goInfo->building.destroyedEvent, attackerOrHealer);
             AI()->Destroyed(attackerOrHealer, m_goInfo->building.destroyedEvent);
@@ -2512,13 +2560,22 @@ void GameObject::SetLootState(LootState state, Unit* unit)
         m_lootStateUnitGUID.Clear();
 
 #ifdef ELUNA
-    sEluna->OnLootStateChanged(this, state);
+    if (Eluna* e = GetEluna())
+        e->OnLootStateChanged(this, state);
 #endif
     AI()->OnLootStateChanged(state, unit);
 
     // Start restock timer if the chest is partially looted or not looted at all
-    if (GetGoType() == GAMEOBJECT_TYPE_CHEST && state == GO_ACTIVATED && GetGOInfo()->chest.chestRestockTime > 0 && m_restockTime == 0)
-        m_restockTime = GameTime::GetGameTime() + GetGOInfo()->chest.chestRestockTime;
+    if (GetGoType() == GAMEOBJECT_TYPE_CHEST && state == GO_ACTIVATED)
+    {
+        GameObjectTemplate const* goInfo = GetGOInfo();
+        if (goInfo->chest.chestRestockTime > 0 && m_restockTime == 0)
+            m_restockTime = GameTime::GetGameTime() + goInfo->chest.chestRestockTime;
+
+        // If world chests were opened, despawn them after 5 minutes
+        if (goInfo->chest.chestRestockTime == 0 && GetMap()->IsWorldMap())
+            DespawnOrUnsummon(5min);
+    }
 
     if (GetGoType() == GAMEOBJECT_TYPE_DOOR) // only set collision for doors on SetGoState
         return;
@@ -2543,7 +2600,8 @@ void GameObject::SetGoState(GOState state)
 {
     SetByteValue(GAMEOBJECT_BYTES_1, 0, state);
 #ifdef ELUNA
-    sEluna->OnGameObjectStateChanged(this, state);
+    if (Eluna* e = GetEluna())
+        e->OnGameObjectStateChanged(this, state);
 #endif
     if (AI())
         AI()->OnStateChanged(state);

@@ -8,14 +8,30 @@
 # WITHOUT ANY WARRANTY, to the extent permitted by law; without even the
 # implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
-# Exclude files in the LuaEngine directory for Mangos and CMangos
+
+# Initialize a variable to hold Eluna directories to exclude
+set(ELUNA_EXCLUDE_DIRS)
+
+# Exclude files in the LuaEngine directory for Mangos, CMangos and VMangos
+# or the entire directory if Eluna is disabled
+if(ELUNA)
+  list(APPEND ELUNA_EXCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaEngine/methods/Mangos
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaEngine/methods/CMangos
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaEngine/methods/VMangos
+    )
+else()
+  list(APPEND ELUNA_EXCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaEngine
+    )
+endif()
+
 CollectSourceFiles(
   ${CMAKE_CURRENT_SOURCE_DIR}
   PRIVATE_SOURCES
   # Exclude
   ${CMAKE_CURRENT_SOURCE_DIR}/PrecompiledHeaders
-  ${CMAKE_CURRENT_SOURCE_DIR}/LuaEngine/Mangos
-  ${CMAKE_CURRENT_SOURCE_DIR}/LuaEngine/CMangos)
+  ${ELUNA_EXCLUDE_DIRS})
 
 if(USE_COREPCH)
   set(PRIVATE_PCH_HEADER PrecompiledHeaders/gamePCH.h)
@@ -23,17 +39,12 @@ endif()
 
 GroupSources(${CMAKE_CURRENT_SOURCE_DIR})
 
-add_definitions(-DTRINITY_API_EXPORT_GAME)
-
-# Exclude files in the LuaEngine directory for Mangos and CMangos
 CollectIncludeDirectories(
   ${CMAKE_CURRENT_SOURCE_DIR}
   PUBLIC_INCLUDES
   # Exclude
   ${CMAKE_CURRENT_SOURCE_DIR}/PrecompiledHeaders
-  ${CMAKE_CURRENT_SOURCE_DIR}/LuaEngine/Mangos
-  ${CMAKE_CURRENT_SOURCE_DIR}/LuaEngine/CMangos
-  )
+  ${ELUNA_EXCLUDE_DIRS})
 
 # Provide an interface target for the game project to allow
 # dependent projects to build meanwhile.
@@ -55,12 +66,21 @@ target_include_directories(game
   PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR})
 
+set_target_properties(game
+  PROPERTIES
+    DEFINE_SYMBOL TRINITY_API_EXPORT_GAME)
+
 target_link_libraries(game
   PRIVATE
     trinity-core-interface
-    efsw
   PUBLIC
     game-interface)
+
+if(TARGET efsw)
+  target_link_libraries(game
+    PRIVATE
+      efsw)
+endif()
 
 set_target_properties(game
     PROPERTIES
@@ -106,4 +126,6 @@ if(ELUNA)
   elseif(WIN32)
     install(DIRECTORY LuaEngine/extensions DESTINATION "${CMAKE_INSTALL_PREFIX}/lua_scripts/")
   endif()
+
+  add_subdirectory(LuaEngine)
 endif()
