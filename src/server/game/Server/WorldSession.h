@@ -733,6 +733,12 @@ class TC_GAME_API WorldSession
         time_t GetCalendarEventCreationCooldown() const { return _calendarEventCreationCooldown; }
         void SetCalendarEventCreationCooldown(time_t cooldown) { _calendarEventCreationCooldown = cooldown; }
 
+        /*>>>BotEngine*/
+        bool IsBot() const { return _isBotSession; }
+        void IsBot(bool flag) { _isBotSession = flag; }
+        void HandleBotLogin(ObjectGuid pmCharacterGUID);
+        /*<<<BotEngine*/
+
     public:                                                 // opcodes handlers
 
         void Handle_NULL(WorldPacket& recvPacket);          // not used
@@ -1369,6 +1375,10 @@ class TC_GAME_API WorldSession
 
         WorldSession(WorldSession const& right) = delete;
         WorldSession& operator=(WorldSession const& right) = delete;
+
+        /*>>>BotEngine*/
+        bool _isBotSession = false;
+        /*<<<BotEngine*/
 };
 
 #endif

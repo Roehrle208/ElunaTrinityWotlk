@@ -23,3 +23,7 @@ nbproject/*
 cmake-build-*/
 .vs
 *.user
+
+#BotEngine
+/repack/*
+/src/scripts/Custom/BotEngine/*

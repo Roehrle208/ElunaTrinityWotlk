@@ -2661,6 +2661,10 @@ void World::Update(uint32 diff)
         sMetric->Update();
         TC_METRIC_VALUE("update_time_diff", diff);
     }
+
+    /*>>>BotEngine*/
+    CallPostUpdateCallbacks(diff);
+    /*<<<BotEngine*/
 }
 
 void World::ForceGameEventUpdate()

@@ -785,6 +785,28 @@ class TC_GAME_API World
 #ifdef ELUNA
         Eluna* GetEluna() const { return sElunaMgr->Get(_elunaInfo); }
 #endif
+
+        /*>>>BotEngine*/
+        template<class T> void AddPostUpdateCallback(T* const obj, void(T::* const func)(uint32), bool reserve = false) {
+            if (!reserve)
+                _postUpdateCallbacks.emplace_back(std::bind(func, obj, std::placeholders::_1));
+            else
+                _postUpdateCallbacksReserved.emplace_back(std::bind(func, obj, std::placeholders::_1));
+        };
+        void CallPostUpdateCallbacks(uint32 diff)
+        {
+            for (const auto& cb : _postUpdateCallbacks)
+                cb(diff);
+            _postUpdateCallbacks.clear();
+
+            if (_postUpdateCallbacksReserved.size()) {
+                // deep copy reserved callbacks
+                _postUpdateCallbacks.assign(_postUpdateCallbacksReserved.begin(), _postUpdateCallbacksReserved.end());
+                _postUpdateCallbacksReserved.clear();
+            }
+        }
+        /*<<<BotEngine*/
+
     protected:
         void _UpdateGameTime();
 
@@ -899,6 +921,12 @@ class TC_GAME_API World
         bool _guidAlert;
         uint32 _warnDiff;
         time_t _warnShutdownTime;
+
+        /*>>>BotEngine*/
+        std::vector<std::function<void(int)>> _postUpdateCallbacks;
+        std::vector<std::function<void(int)>> _postUpdateCallbacksReserved;
+        /*<<<BotEngine*/
+
 #ifdef ELUNA
         ElunaInfo _elunaInfo;
 #endif
