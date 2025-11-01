@@ -1,0 +1,5 @@
+# repack/.gitignore
+!/*
+!patches/*.patch
+
+patch.log
