@@ -240,7 +240,7 @@ uint32 MxbManager::createBotCharacter(uint32 botAccountID, std::string botName, 
     bcci->HairColor = hairColor;
     bcci->FacialHair = facialHair;
     bcci->OutfitId = 0;
-    WorldSession* session = new WorldSession(botAccountID, "mxb", NULL, SEC_PLAYER, 2, 0, LOCALE_enUS, 0, false);
+    WorldSession* session = new WorldSession(botAccountID, "mxb", NULL, SEC_PLAYER, 2, 0, Minutes(0), LOCALE_enUS, 0, false);
     Player* bot = new Player(session);
     if (!bot->Create(sObjectMgr->GetGenerator<HighGuid::Player>().Generate(), bcci)) {
         bot->CleanupsBeforeDelete();
@@ -286,7 +286,7 @@ bool MxbManager::loginBot(uint32 botAccountID, uint32 botCharacterID)
 
     WorldSession* session = sWorld->FindSession(botAccountID);
     if (!session) {
-        session = new WorldSession(botAccountID, "mxb", NULL, SEC_PLAYER, 2, 0, LOCALE_enUS, 0, false);
+        session = new WorldSession(botAccountID, "mxb", NULL, SEC_PLAYER, 2, 0, Minutes(0), LOCALE_enUS, 0, false);
         sWorld->AddSession(session);
     }
 
