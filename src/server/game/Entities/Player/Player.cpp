@@ -11706,7 +11706,7 @@ Item* Player::StoreNewItem(ItemPosCountVec const& pos, uint32 itemId, bool updat
 
 #ifdef ELUNA
         if (Eluna* e = GetEluna())
-            e->OnAdd(this, pItem);
+            e->OnAdd(this, item);
 #endif
     }
     return item;
